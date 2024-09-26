@@ -1,0 +1,14 @@
+cflags = -Wall -Wextra -Werror -Ithird_party
+linkflags = -Wl,-z,defs -Wl,--no-undefined
+out = build
+
+rule cxx
+    depfile = $out.d
+    command = g++ -MD -MF $out.d $cflags -c $in -o $out
+
+rule link
+    command = g++ $linkflags $in -o $out
+
+build $out/model.o: cxx model.cpp
+
+build $out/model: link $out/model.o

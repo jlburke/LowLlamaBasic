@@ -1,0 +1,6 @@
+.ninja_log
+.venv
+
+/build
+/local
+/third_party
