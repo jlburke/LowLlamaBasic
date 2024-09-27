@@ -1,4 +1,4 @@
-cflags = -Wall -Wextra -Werror -Ithird_party
+cflags = -Wall -Wextra -Werror -Ithird_party -std=c++20
 linkflags = -Wl,-z,defs -Wl,--no-undefined
 out = build
 
