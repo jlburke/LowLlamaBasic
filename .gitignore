@@ -1,5 +1,6 @@
 .ninja_log
 .venv
+.vscode
 
 /build
 /local
