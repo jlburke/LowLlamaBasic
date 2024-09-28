@@ -16,14 +16,26 @@ namespace lp {
 ///////////////////////////////////////////////////////////////////////////////
 // Basics
 
+using bf16 = int16_t;
+
+float bf16_to_float(bf16 value) {
+    union {
+        float f;
+        int16_t i[2];
+    } u;
+    u.i[0] = 0;
+    u.i[1] = value;
+    return u.f;
+}
+
 struct Parameter {
     const void* data;
+    const bf16* get_bf16() const { return reinterpret_cast<const bf16*>(data); }
 };
 
 struct Activation {
     size_t size;
     std::unique_ptr<float[]> data;
-
     explicit Activation(size_t n) : size(n), data(new float[n]) {}
 };
 
@@ -46,18 +58,6 @@ std::ostream& operator<<(std::ostream& out, const Activation& a) {
         }
     }
     return out;
-}
-
-using bf16 = int16_t;
-
-float bf16_to_float(bf16 value) {
-    union {
-        float f;
-        int16_t i[2];
-    } u;
-    u.i[0] = 0;
-    u.i[1] = value;
-    return u.f;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -180,12 +180,28 @@ void loadParameters(Model& model, std::istream& file) {
 ///////////////////////////////////////////////////////////////////////////////
 // Ops
 
-Activation embeddingLookup(const Model& model, const std::vector<unsigned>& tokens) {
-    const bf16* weight = reinterpret_cast<const bf16*>(model.embedTokens.data);
-    Activation y(tokens.size() * model.dModel);
+Activation embeddingLookup(const std::vector<unsigned>& tokens,
+                           const bf16* weight,
+                           unsigned dModel) {
+    Activation y(tokens.size() * dModel);
     for (auto n = 0u; n < tokens.size(); ++n) {
-        for (auto i = 0u; i < model.dModel; ++i) {
-            y.data[n * model.dModel + i] = bf16_to_float(weight[tokens[n] * model.dModel + i]);
+        for (auto i = 0u; i < dModel; ++i) {
+            y.data[n * dModel + i] = bf16_to_float(weight[tokens[n] * dModel + i]);
+        }
+    }
+    return y;
+}
+
+Activation rmsNorm(const Activation& x, const bf16* weight, unsigned dModel, float eps) {
+    Activation y(x.size);
+    for (auto i0 = 0u; i0 < x.size; i0 += dModel) {
+        float sumSq = 0;
+        for (auto i = 0u; i < dModel; ++i) {
+            sumSq += x.data[i0 + i] * x.data[i0 + i];
+        }
+        float norm = 1 / (std::sqrt(sumSq / dModel + eps));
+        for (auto i = 0u; i < dModel; ++i) {
+            y.data[i0 + i] = x.data[i0 + i] * norm * bf16_to_float(weight[i]);
         }
     }
     return y;
@@ -195,8 +211,10 @@ Activation embeddingLookup(const Model& model, const std::vector<unsigned>& toke
 // Functions
 
 void predict(const Model& model, const std::vector<unsigned>& tokens) {
-    auto embedding = embeddingLookup(model, tokens);
-    std::cerr << "embedding: " << embedding << std::endl;
+    auto embedding = embeddingLookup(tokens, model.embedTokens.get_bf16(), model.dModel);
+
+    auto z = rmsNorm(embedding, model.layers[0].attnNorm.get_bf16(), model.dModel, model.normEps);
+    std::cerr << "norm: " << z << std::endl;
 }
 
 }  // namespace lp
