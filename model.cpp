@@ -207,14 +207,37 @@ Activation rmsNorm(const Activation& x, const bf16* weight, unsigned dModel, flo
     return y;
 }
 
+Activation project(const Activation& x, const bf16* weight, unsigned dIn, unsigned dOut) {
+    Activation y(x.size / dIn * dOut);
+    for (auto n = 0u; n < x.size / dIn; ++n) {
+        for (auto j = 0u; j < dOut; ++j) {
+            float dot = 0;
+            for (auto i = 0u; i < dIn; ++i) {
+                dot += x.data[n * dIn + i] * bf16_to_float(weight[j * dIn + i]);
+            }
+            y.data[n * dOut + j] = dot;
+        }
+    }
+    return y;
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // Functions
 
 void predict(const Model& model, const std::vector<unsigned>& tokens) {
     auto embedding = embeddingLookup(tokens, model.embedTokens.get_bf16(), model.dModel);
 
+    // [0].attn
     auto z = rmsNorm(embedding, model.layers[0].attnNorm.get_bf16(), model.dModel, model.normEps);
-    std::cerr << "norm: " << z << std::endl;
+    auto q = project(z, model.layers[0].attnQ.get_bf16(), model.dModel,
+                     model.dAttnKV * model.dAttnQ * model.dAttnHead);
+    auto k =
+        project(z, model.layers[0].attnK.get_bf16(), model.dModel, model.dAttnKV * model.dAttnHead);
+    auto v =
+        project(z, model.layers[0].attnV.get_bf16(), model.dModel, model.dAttnKV * model.dAttnHead);
+    std::cerr << "q: " << q << std::endl;
+    std::cerr << "k: " << k << std::endl;
+    std::cerr << "v: " << v << std::endl;
 }
 
 }  // namespace lp
