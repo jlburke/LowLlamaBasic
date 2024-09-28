@@ -13,9 +13,55 @@ using json = nlohmann::json;
 
 namespace lp {
 
+///////////////////////////////////////////////////////////////////////////////
+// Basics
+
 struct Parameter {
     const void* data;
 };
+
+struct Activation {
+    size_t size;
+    std::unique_ptr<float[]> data;
+
+    explicit Activation(size_t n) : size(n), data(new float[n]) {}
+};
+
+std::ostream& operator<<(std::ostream& out, const Activation& a) {
+    if (a.size < 16) {
+        for (auto i = 0u; i < a.size; ++i) {
+            if (i) {
+                out << ", ";
+            }
+            out << a.data[i];
+        }
+    } else {
+        for (auto i : std::vector<size_t>({0, 1, 2, a.size - 3, a.size - 2, a.size - 1})) {
+            if (i == a.size - 3) {
+                out << " ... ";
+            } else if (i) {
+                out << ", ";
+            }
+            out << a.data[i];
+        }
+    }
+    return out;
+}
+
+using bf16 = int16_t;
+
+float bf16_to_float(bf16 value) {
+    union {
+        float f;
+        int16_t i[2];
+    } u;
+    u.i[0] = 0;
+    u.i[1] = value;
+    return u.f;
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Model
 
 struct Layer {
     Parameter attnNorm;
@@ -131,20 +177,26 @@ void loadParameters(Model& model, std::istream& file) {
     model.finalNorm = load("norm");
 }
 
-float bf16_to_float(int16_t value) {
-    union {
-        float f;
-        int16_t i[2];
-    } u;
-    u.i[0] = 0;
-    u.i[1] = value;
-    return u.f;
+///////////////////////////////////////////////////////////////////////////////
+// Ops
+
+Activation embeddingLookup(const Model& model, const std::vector<unsigned>& tokens) {
+    const bf16* weight = reinterpret_cast<const bf16*>(model.embedTokens.data);
+    Activation y(tokens.size() * model.dModel);
+    for (auto n = 0u; n < tokens.size(); ++n) {
+        for (auto i = 0u; i < model.dModel; ++i) {
+            y.data[n * model.dModel + i] = bf16_to_float(weight[tokens[n] * model.dModel + i]);
+        }
+    }
+    return y;
 }
 
-void predict(const Model& /*model*/, const std::vector<unsigned>& tokens) {
-    std::cerr << tokens.size() << " tokens ";
-    std::copy(tokens.begin(), tokens.end(), std::ostream_iterator<unsigned>(std::cerr, ", "));
-    std::cerr << "\n";
+///////////////////////////////////////////////////////////////////////////////
+// Functions
+
+void predict(const Model& model, const std::vector<unsigned>& tokens) {
+    auto embedding = embeddingLookup(model, tokens);
+    std::cerr << "embedding: " << embedding << std::endl;
 }
 
 }  // namespace lp
