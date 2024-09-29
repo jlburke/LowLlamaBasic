@@ -303,23 +303,23 @@ void addInPlace(Activation& lhs, const Activation& rhs) {
 ///////////////////////////////////////////////////////////////////////////////
 // Model ops
 
-void predict(const Model& model, const std::vector<unsigned>& tokens) {
-    auto hidden = embeddingLookup(tokens, model.embedTokens.get_bf16(), model.dModel);
-
-    // [0].attn
-    auto z = rmsNorm(hidden, model.layers[0].attnNorm.get_bf16(), model.dModel, model.normEps);
-    auto q = project(z, model.layers[0].attnQ.get_bf16(), model.dModel,
+Activation attention(const Model& model, const Layer& layer, const Activation& x) {
+    auto z = rmsNorm(x, layer.attnNorm.get_bf16(), model.dModel, model.normEps);
+    auto q = project(z, layer.attnQ.get_bf16(), model.dModel,
                      model.dAttnKV * model.dAttnQ * model.dAttnHead);
-    auto k =
-        project(z, model.layers[0].attnK.get_bf16(), model.dModel, model.dAttnKV * model.dAttnHead);
-    auto v =
-        project(z, model.layers[0].attnV.get_bf16(), model.dModel, model.dAttnKV * model.dAttnHead);
+    auto k = project(z, layer.attnK.get_bf16(), model.dModel, model.dAttnKV * model.dAttnHead);
+    auto v = project(z, layer.attnV.get_bf16(), model.dModel, model.dAttnKV * model.dAttnHead);
     q = rotate(q, model.ropeFreq, model.dAttnKV * model.dAttnQ);
     k = rotate(k, model.ropeFreq, model.dAttnKV);
     auto mix = selfAttention(q, k, v, model.dAttnKV, model.dAttnQ, model.dAttnHead);
-    auto o = project(mix, model.layers[0].attnO.get_bf16(),
-                     model.dAttnKV * model.dAttnQ * model.dAttnHead, model.dModel);
-    addInPlace(hidden, o);
+    return project(mix, layer.attnO.get_bf16(), model.dAttnKV * model.dAttnQ * model.dAttnHead,
+                   model.dModel);
+}
+
+void predict(const Model& model, const std::vector<unsigned>& tokens) {
+    auto hidden = embeddingLookup(tokens, model.embedTokens.get_bf16(), model.dModel);
+
+    addInPlace(hidden, attention(model, model.layers[0], hidden));
     std::cerr << "hidden: " << hidden << std::endl;
 }
 
