@@ -1,5 +1,5 @@
-cflags = -Wall -Wextra -Werror -Ithird_party -std=c++20
-linkflags = -Wl,-z,defs -Wl,--no-undefined
+cflags = -Wall -Wextra -Werror -Ithird_party -std=c++20 -O3 -fopenmp
+linkflags = -Wl,-z,defs -Wl,--no-undefined -fopenmp
 out = build
 
 rule cxx
@@ -10,5 +10,7 @@ rule link
     command = g++ $linkflags $in -o $out
 
 build $out/model.o: cxx model.cpp
+build $out/model.s: cxx model.cpp
+    cflags = $cflags -S
 
 build $out/model: link $out/model.o

@@ -1,4 +1,7 @@
+#include <omp.h>
 #include <stdint.h>
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <exception>
 #include <format>
@@ -63,6 +66,18 @@ std::ostream& operator<<(std::ostream& out, const Activation& a) {
     }
     return out;
 }
+
+struct Stopwatch {
+    typedef std::chrono::high_resolution_clock clock;
+    clock::time_point start;
+
+    Stopwatch() : start(clock::now()) {}
+
+    double elapsed() const {
+        return std::chrono::duration_cast<std::chrono::duration<double>>(clock::now() - start)
+            .count();
+    }
+};
 
 ///////////////////////////////////////////////////////////////////////////////
 // Model
@@ -215,8 +230,9 @@ Activation rmsNorm(const Activation& x, const bf16* weight, unsigned dModel, flo
 
 Activation project(const Activation& x, const bf16* weight, unsigned dIn, unsigned dOut) {
     Activation y(x.size / dIn * dOut);
-    for (auto n = 0u; n < x.size / dIn; ++n) {
-        for (auto j = 0u; j < dOut; ++j) {
+#pragma omp parallel for
+    for (auto j = 0u; j < dOut; ++j) {
+        for (auto n = 0u; n < x.size / dIn; ++n) {
             float dot = 0;
             for (auto i = 0u; i < dIn; ++i) {
                 dot += x.data[n * dIn + i] * bf16_to_float(weight[j * dIn + i]);
@@ -333,20 +349,17 @@ Activation mlp(const Model& model, const Layer& layer, const Activation& x) {
 }
 
 void predict(const Model& model, const std::vector<unsigned>& tokens) {
+    auto timer = Stopwatch();
     auto hidden = embeddingLookup(tokens, model.embedTokens.get_bf16(), model.dModel);
-
     for (auto& layer : model.layers) {
         addInPlace(hidden, attention(model, layer, hidden));
         addInPlace(hidden, mlp(model, layer, hidden));
     }
-    std::cerr << "hidden: " << hidden << std::endl;
     hidden = rmsNorm(hidden, model.finalNorm.get_bf16(), model.dModel, model.normEps);
     auto logits = project(hidden, model.embedTokens.get_bf16(), model.dModel, model.dVocab);
-    std::cerr << "logits: " << logits << std::endl;
-
     auto begin = logits.data.get() + logits.size - model.dVocab;
     auto nextToken = std::max_element(begin, logits.data.get() + logits.size) - begin;
-    std::cerr << "predict: " << nextToken << std::endl;
+    std::cout << nextToken << " in " << timer.elapsed() << " s" << std::endl;
 }
 
 }  // namespace lp
@@ -376,6 +389,7 @@ int main(int argc, char** argv) {
                 tokens.push_back(token);
             }
         }
+        lp::predict(model, tokens);
         lp::predict(model, tokens);
     }
 
