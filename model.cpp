@@ -82,6 +82,7 @@ struct Layer {
 
 struct Model {
     unsigned nLayers;
+    unsigned dVocab;
     unsigned dModel;
     unsigned dFFN;
     unsigned dAttnHead;
@@ -108,6 +109,7 @@ Model loadConfig(std::istream& file) {
 
     Model m;
     m.nLayers = config["num_hidden_layers"].template get<unsigned>();
+    m.dVocab = config["vocab_size"].template get<unsigned>();
     m.dModel = config["hidden_size"].template get<unsigned>();
     m.dFFN = config["intermediate_size"].template get<unsigned>();
     m.dAttnHead = config["head_dim"].template get<unsigned>();
@@ -300,6 +302,12 @@ void addInPlace(Activation& lhs, const Activation& rhs) {
     }
 }
 
+void swiGluInPlace(Activation& x, const Activation& gate) {
+    for (auto i = 0u; i < x.size; ++i) {
+        x.data[i] *= gate.data[i] / (1 + std::exp(-gate.data[i]));
+    }
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // Model ops
 
@@ -316,14 +324,35 @@ Activation attention(const Model& model, const Layer& layer, const Activation& x
                    model.dModel);
 }
 
+Activation mlp(const Model& model, const Layer& layer, const Activation& x) {
+    auto z = rmsNorm(x, layer.mlpNorm.get_bf16(), model.dModel, model.normEps);
+    auto up = project(z, layer.mlpUp.get_bf16(), model.dModel, model.dFFN);
+    auto gate = project(z, layer.mlpGate.get_bf16(), model.dModel, model.dFFN);
+    swiGluInPlace(up, gate);
+    return project(up, layer.mlpDown.get_bf16(), model.dFFN, model.dModel);
+}
+
 void predict(const Model& model, const std::vector<unsigned>& tokens) {
     auto hidden = embeddingLookup(tokens, model.embedTokens.get_bf16(), model.dModel);
 
-    addInPlace(hidden, attention(model, model.layers[0], hidden));
+    for (auto& layer : model.layers) {
+        addInPlace(hidden, attention(model, layer, hidden));
+        addInPlace(hidden, mlp(model, layer, hidden));
+    }
     std::cerr << "hidden: " << hidden << std::endl;
+    hidden = rmsNorm(hidden, model.finalNorm.get_bf16(), model.dModel, model.normEps);
+    auto logits = project(hidden, model.embedTokens.get_bf16(), model.dModel, model.dVocab);
+    std::cerr << "logits: " << logits << std::endl;
+
+    auto begin = logits.data.get() + logits.size - model.dVocab;
+    auto nextToken = std::max_element(begin, logits.data.get() + logits.size) - begin;
+    std::cerr << "predict: " << nextToken << std::endl;
 }
 
 }  // namespace lp
+
+///////////////////////////////////////////////////////////////////////////////
+// Driver program
 
 int main(int argc, char** argv) {
     if (argc < 3) {
