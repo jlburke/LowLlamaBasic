@@ -244,14 +244,70 @@ Activation rotate(const Activation& x, const std::vector<float>& freq, unsigned 
     return y;
 }
 
+void softmaxInPlace(Activation& x) {
+    auto max = *std::max_element(x.data.get(), x.data.get() + x.size);
+    float sum = 0;
+    for (auto i = 0u; i < x.size; ++i) {
+        x.data[i] = std::exp(x.data[i] - max);
+        sum += x.data[i];
+    }
+    for (auto i = 0u; i < x.size; ++i) {
+        x.data[i] /= sum;
+    }
+}
+
+// q.shape   (seq, dKV, dQ, dHead)
+// k.shape   (seq, dKV, dHead)
+// v.shape   (seq, dKV, dHead)
+// out.shape (seq, dKV, dQ, dHead)
+Activation selfAttention(const Activation& q,
+                         const Activation& k,
+                         const Activation& v,
+                         unsigned dKV,
+                         unsigned dQ,
+                         unsigned dHead) {
+    Activation out(q.size);
+    auto dSeq = k.size / (dKV * dHead);
+    for (auto iKV = 0u; iKV < dKV; ++iKV) {
+        for (auto sQ = 0u; sQ < dSeq; ++sQ) {
+            for (auto iQ = 0u; iQ < dQ; ++iQ) {
+                Activation scores(sQ + 1);
+                for (auto sKV = 0u; sKV <= sQ; ++sKV) {
+                    float sum = 0;
+                    for (auto i = 0u; i < dHead; ++i) {
+                        sum += q.data[sQ * dKV * dQ * dHead + iKV * dQ * dHead + iQ * dHead + i] *
+                               k.data[sKV * dKV * dHead + iKV * dHead + i];
+                    }
+                    scores.data[sKV] = sum / std::sqrt(static_cast<float>(dHead));
+                }
+                softmaxInPlace(scores);
+                for (auto i = 0u; i < dHead; ++i) {
+                    float sum = 0;
+                    for (auto sKV = 0u; sKV <= sQ; ++sKV) {
+                        sum += scores.data[sKV] * v.data[sKV * dKV * dHead + iKV * dHead + i];
+                    }
+                    out.data[sQ * dKV * dQ * dHead + iKV * dQ * dHead + iQ * dHead + i] = sum;
+                }
+            }
+        }
+    }
+    return out;
+}
+
+void addInPlace(Activation& lhs, const Activation& rhs) {
+    for (auto i = 0u; i < lhs.size; ++i) {
+        lhs.data[i] += rhs.data[i];
+    }
+}
+
 ///////////////////////////////////////////////////////////////////////////////
-// Functions
+// Model ops
 
 void predict(const Model& model, const std::vector<unsigned>& tokens) {
-    auto embedding = embeddingLookup(tokens, model.embedTokens.get_bf16(), model.dModel);
+    auto hidden = embeddingLookup(tokens, model.embedTokens.get_bf16(), model.dModel);
 
     // [0].attn
-    auto z = rmsNorm(embedding, model.layers[0].attnNorm.get_bf16(), model.dModel, model.normEps);
+    auto z = rmsNorm(hidden, model.layers[0].attnNorm.get_bf16(), model.dModel, model.normEps);
     auto q = project(z, model.layers[0].attnQ.get_bf16(), model.dModel,
                      model.dAttnKV * model.dAttnQ * model.dAttnHead);
     auto k =
@@ -260,9 +316,11 @@ void predict(const Model& model, const std::vector<unsigned>& tokens) {
         project(z, model.layers[0].attnV.get_bf16(), model.dModel, model.dAttnKV * model.dAttnHead);
     q = rotate(q, model.ropeFreq, model.dAttnKV * model.dAttnQ);
     k = rotate(k, model.ropeFreq, model.dAttnKV);
-
-    std::cerr << "q: " << q << std::endl;
-    std::cerr << "k: " << k << std::endl;
+    auto mix = selfAttention(q, k, v, model.dAttnKV, model.dAttnQ, model.dAttnHead);
+    auto o = project(mix, model.layers[0].attnO.get_bf16(),
+                     model.dAttnKV * model.dAttnQ * model.dAttnHead, model.dModel);
+    addInPlace(hidden, o);
+    std::cerr << "hidden: " << hidden << std::endl;
 }
 
 }  // namespace lp
