@@ -37,6 +37,9 @@ struct Activation {
     size_t size;
     std::unique_ptr<float[]> data;
     explicit Activation(size_t n) : size(n), data(new float[n]) {}
+    Activation(float* begin, float* end) : size(end - begin), data(new float[end - begin]) {
+        std::copy(begin, end, data.get());
+    }
 };
 
 std::ostream& operator<<(std::ostream& out, const Activation& a) {
@@ -48,6 +51,7 @@ std::ostream& operator<<(std::ostream& out, const Activation& a) {
             out << a.data[i];
         }
     } else {
+        out << "(" << a.size << ") ";
         for (auto i : std::vector<size_t>({0, 1, 2, a.size - 3, a.size - 2, a.size - 1})) {
             if (i == a.size - 3) {
                 out << " ... ";
@@ -221,6 +225,25 @@ Activation project(const Activation& x, const bf16* weight, unsigned dIn, unsign
     return y;
 }
 
+// x.shape (seq, nHeads, 2*len(freq))
+Activation rotate(const Activation& x, const std::vector<float>& freq, unsigned nHeads) {
+    Activation y(x.size);
+    unsigned headDim = 2 * freq.size();
+    for (auto n = 0u; n < x.size / (nHeads * headDim); ++n) {
+        for (auto h = 0u; h < nHeads; ++h) {
+            for (auto i = 0u; i < freq.size(); ++i) {
+                auto idxRe = n * nHeads * headDim + h * headDim + i;
+                auto idxIm = idxRe + freq.size();
+                auto cosA = std::cos(freq[i] * n);
+                auto sinA = std::sin(freq[i] * n);
+                y.data[idxRe] = cosA * x.data[idxRe] - sinA * x.data[idxIm];
+                y.data[idxIm] = cosA * x.data[idxIm] + sinA * x.data[idxRe];
+            }
+        }
+    }
+    return y;
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // Functions
 
@@ -235,9 +258,11 @@ void predict(const Model& model, const std::vector<unsigned>& tokens) {
         project(z, model.layers[0].attnK.get_bf16(), model.dModel, model.dAttnKV * model.dAttnHead);
     auto v =
         project(z, model.layers[0].attnV.get_bf16(), model.dModel, model.dAttnKV * model.dAttnHead);
+    q = rotate(q, model.ropeFreq, model.dAttnKV * model.dAttnQ);
+    k = rotate(k, model.ropeFreq, model.dAttnKV);
+
     std::cerr << "q: " << q << std::endl;
     std::cerr << "k: " << k << std::endl;
-    std::cerr << "v: " << v << std::endl;
 }
 
 }  // namespace lp
